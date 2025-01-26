@@ -133,7 +133,8 @@ ggplot(data, aes(x = as.numeric(hour))) +
   geom_histogram(binwidth = 1) +
   labs(title = "Peticiones por Hora", x = "Hora del Día", y = "Frecuencia")
 ```
- Las peticiones varían significativamente a lo largo del día, con picos en horas específicas. Esto sugiere un uso intensivo en ciertos momentos, relevante para ajustar la capacidad del servidor.
+Las peticiones varían significativamente a lo largo del día, con picos en horas específicas. Esto sugiere un uso intensivo en ciertos momentos, relevante para ajustar la capacidad del servidor.
+ 
 # 8. Análisis de Clústering
 
 ### Preparación de Datos para K-means
