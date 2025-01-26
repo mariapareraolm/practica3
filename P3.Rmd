@@ -1,0 +1,180 @@
+---
+title: "Análisis de Logs de Servidor"
+author: "Marcel Marimon, Maria Parera, Bernat Batle"
+date: "2025-01-21"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+---
+
+# 1. Carga de Datos
+
+```{r setup, include=FALSE}
+# Configuración inicial
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table)
+```
+
+### Descompresión y carga del archivo CSV
+
+```{r load-data}
+# Carga del archivo con separación por espacios y sin encabezados
+data_path <- "epa-http.csv"
+data <- read.csv(data_path, header = FALSE, sep = " ", quote = '"', stringsAsFactors = FALSE)
+
+# Asignar nombres de columnas
+data <- data %>% rename(
+  ip = V1,
+  timestamp = V2,
+  request = V3,
+  status = V4,
+  bytes = V5
+)
+
+# Separar método, recurso y protocolo desde la columna 'request'
+data <- data %>% separate(request, into = c("method", "resource", "protocol"), sep = " ")
+
+# Visualización inicial
+head(data)
+```
+
+# 2. Descripción de los Datos
+
+### Descripción
+
+Los datos analizados corresponden a registros de un servidor Apache. Cada fila representa una interacción con el servidor, incluyendo:
+
+- **Dirección IP:** Identificador único del usuario.
+- **Fecha y hora:** Momento en que se realizó la petición.
+- **Método HTTP:** Tipo de acción solicitada (GET, POST, etc.).
+- **Recurso solicitado:** URL del recurso accedido.
+- **Código de respuesta:** Estado de la petición (200, 404, etc.).
+- **Bytes transferidos:** Tamaño de los datos enviados al cliente.
+
+# 3. Limpieza de los Datos
+
+```{r clean-data}
+# Limpieza de columnas
+data <- data %>% mutate(
+  timestamp = str_replace_all(timestamp, "\\[|\\]", ""),
+  timestamp = as.POSIXct(timestamp, format = "%d:%H:%M:%S"),
+  bytes = as.numeric(bytes),
+  status = as.integer(status)
+)
+
+# Verificar datos limpios
+summary(data)
+```
+
+# 4. Identificación de Usuarios
+
+```{r unique-users}
+# Usuarios únicos con errores y sin errores
+users_with_errors <- data %>% filter(status >= 400) %>% distinct(ip)
+users_without_errors <- data %>% filter(status < 400) %>% distinct(ip)
+
+# Resultados
+cat("Usuarios con errores:", nrow(users_with_errors), "\n")
+cat("Usuarios sin errores:", nrow(users_without_errors), "\n")
+
+# Tipos de errores y frecuencia
+error_types <- data %>% filter(status >= 400) %>% count(status)
+error_types
+```
+Identificamos usuarios con errores (192) y sin errores (2,320). Los códigos de error más frecuentes fueron 404 (no encontrado) y 403 (prohibido), lo que podría reflejar recursos inaccesibles o configuraciones restrictivas.
+
+
+# 5. Análisis de Peticiones HTTP
+
+```{r request-analysis}
+# Frecuencia de métodos HTTP
+method_counts <- data %>% count(method)
+method_counts
+
+# Filtrar recursos tipo imagen
+image_requests <- data %>% filter(str_detect(resource, "\\.(|img|jpg|jpeg|png|gif)$"))
+head(image_requests)
+# Frecuencia de métodos en recursos tipo imagen
+image_method_counts <- image_requests %>% count(method)
+image_method_counts
+```
+Las peticiones GET dominan el tráfico del servidor, mientras que POST y HEAD son menos frecuentes. 
+# 6. Visualización de Resultados
+
+### Gráfico 1: Distribución de los Métodos HTTP
+
+```{r plot-http-methods}
+ggplot(method_counts, aes(x = method, y = n)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribución de Métodos HTTP", x = "Método HTTP", y = "Frecuencia")
+```
+
+### Gráfico 2: Usuarios con y sin errores
+
+```{r plot-errors}
+users_data <- data.frame(
+  Tipo = c("Con errores", "Sin errores"),
+  Usuarios = c(nrow(users_with_errors), nrow(users_without_errors))
+)
+
+ggplot(users_data, aes(x = Tipo, y = Usuarios, fill = Tipo)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Usuarios con y sin errores", x = "Tipo de Usuario", y = "Cantidad")
+```
+
+# 7. Peticiones a lo Largo del Tiempo
+
+```{r plot-time}
+data <- data %>% mutate(hour = format(timestamp, "%H"))
+
+ggplot(data, aes(x = as.numeric(hour))) +
+  geom_histogram(binwidth = 1) +
+  labs(title = "Peticiones por Hora", x = "Hora del Día", y = "Frecuencia")
+```
+ Las peticiones varían significativamente a lo largo del día, con picos en horas específicas. Esto sugiere un uso intensivo en ciertos momentos, relevante para ajustar la capacidad del servidor.
+# 8. Análisis de Clústering
+
+### Preparación de Datos para K-means
+
+```{r clustering-prepare}
+data <- data %>% mutate(url_length = nchar(resource))
+
+# Crear un DataFrame reducido con datos numéricos para clústering
+numeric_data <- data %>% select(bytes, status, url_length) %>% na.omit()
+
+# Asociar índices originales
+numeric_data <- numeric_data %>% mutate(index = row_number())
+```
+
+### Ejecución del Clústering
+
+```{r clustering-kmeans}
+set.seed(123)
+kmeans_3 <- kmeans(numeric_data %>% select(-index), centers = 3)
+kmeans_6 <- kmeans(numeric_data %>% select(-index), centers = 6)
+
+# Agregar los clusters al DataFrame original
+data <- data %>% mutate(
+  cluster_k3 = NA,
+  cluster_k6 = NA
+)
+data$cluster_k3[numeric_data$index] <- kmeans_3$cluster
+data$cluster_k6[numeric_data$index] <- kmeans_6$cluster
+```
+
+### Gráficos de Clústering
+
+```{r clustering-visualization}
+ggplot(numeric_data, aes(x = bytes, y = url_length, color = factor(kmeans_3$cluster))) +
+  geom_point() +
+  labs(title = "Clústering con k = 3", x = "Bytes", y = "Longitud de URL")
+
+ggplot(numeric_data, aes(x = bytes, y = url_length, color = factor(kmeans_6$cluster))) +
+  geom_point() +
+  labs(title = "Clústering con k = 6", x = "Bytes", y = "Longitud de URL")
+```
+El clústering con k=3 identifica patrones generales en los datos, dividiendo los registros en clústeres bien diferenciados que capturan accesos comunes, peticiones grandes y casos intermedios. En cambio, k=6 proporciona una segmentación más detallada, separando subgrupos dentro de los registros dominantes pero introduciendo cierta dispersión en los datos. Aunque k=6 puede capturar más matices,k=3 ofrece una visión más manejable y consistente para interpretar el comportamiento de los usuarios. La decisión final depende del propósito analítico, pero k=3 parece más eficiente para describir los patrones principales.
+
+
